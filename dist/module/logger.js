@@ -1,7 +1,7 @@
 import _extends from "@babel/runtime/helpers/esm/extends";
 import { ZalgoPromise } from 'zalgo-promise/src';
 import { request, isBrowser, promiseDebounce, noop, safeInterval, objFilter } from 'belter/src';
-import { DEFAULT_LOG_LEVEL, LOG_LEVEL_PRIORITY, AUTO_FLUSH_LEVEL, FLUSH_INTERVAL } from './config';
+import { DEFAULT_LOG_LEVEL, LOG_LEVEL_PRIORITY, AUTO_FLUSH_LEVEL, FLUSH_INTERVAL, AMPLITUDE_URL } from './config';
 import { LOG_LEVEL, PROTOCOL } from './constants';
 
 function httpTransport(_ref) {
@@ -11,20 +11,26 @@ function httpTransport(_ref) {
       json = _ref.json,
       _ref$enableSendBeacon = _ref.enableSendBeacon,
       enableSendBeacon = _ref$enableSendBeacon === void 0 ? false : _ref$enableSendBeacon;
-  var hasHeaders = headers && Object.keys(headers).length;
+  return ZalgoPromise.try(function () {
+    var hasHeaders = headers && Object.keys(headers).length;
 
-  if (window.navigator.sendBeacon && !hasHeaders && enableSendBeacon) {
-    return new ZalgoPromise(function (resolve) {
-      resolve(window.navigator.sendBeacon(url, JSON.stringify(json)));
-    });
-  } else {
+    if (window && window.navigator.sendBeacon && !hasHeaders && enableSendBeacon && window.Blob) {
+      try {
+        var blob = new Blob([JSON.stringify(json)], {
+          type: 'application/json'
+        });
+        return window.navigator.sendBeacon(url, blob);
+      } catch (e) {// pass
+      }
+    }
+
     return request({
       url: url,
       method: method,
       headers: headers,
       json: json
-    }).then(noop);
-  }
+    });
+  }).then(noop);
 }
 
 function extendIfDefined(target, source) {
@@ -42,6 +48,7 @@ export function Logger(_ref2) {
       logLevel = _ref2$logLevel === void 0 ? DEFAULT_LOG_LEVEL : _ref2$logLevel,
       _ref2$transport = _ref2.transport,
       transport = _ref2$transport === void 0 ? httpTransport : _ref2$transport,
+      amplitudeApiKey = _ref2.amplitudeApiKey,
       _ref2$flushInterval = _ref2.flushInterval,
       flushInterval = _ref2$flushInterval === void 0 ? FLUSH_INTERVAL : _ref2$flushInterval,
       _ref2$enableSendBeaco = _ref2.enableSendBeacon,
@@ -103,20 +110,45 @@ export function Logger(_ref2) {
         extendIfDefined(headers, _builder(headers));
       }
 
-      var res = transport({
-        method: 'POST',
-        url: url,
-        headers: headers,
-        json: {
-          events: events,
-          meta: meta,
-          tracking: tracking
-        },
-        enableSendBeacon: enableSendBeacon
-      });
+      var res;
+
+      if (url) {
+        res = transport({
+          method: 'POST',
+          url: url,
+          headers: headers,
+          json: {
+            events: events,
+            meta: meta,
+            tracking: tracking
+          },
+          enableSendBeacon: enableSendBeacon
+        }).catch(noop);
+      }
+
+      if (amplitudeApiKey) {
+        transport({
+          method: 'POST',
+          url: AMPLITUDE_URL,
+          headers: {
+            'content-type': 'application/json'
+          },
+          json: {
+            api_key: amplitudeApiKey,
+            events: tracking.map(function (payload) {
+              // $FlowFixMe
+              return _extends({
+                event_type: payload.transition_name || 'event',
+                event_properties: payload
+              }, payload);
+            })
+          }
+        }).catch(noop);
+      }
+
       events = [];
       tracking = [];
-      return res.then(noop);
+      return ZalgoPromise.resolve(res).then(noop);
     });
   }
 
@@ -224,16 +256,51 @@ export function Logger(_ref2) {
     return logger; // eslint-disable-line no-use-before-define
   }
 
+  function configure(opts) {
+    if (opts.url) {
+      url = opts.url;
+    }
+
+    if (opts.prefix) {
+      prefix = opts.prefix;
+    }
+
+    if (opts.logLevel) {
+      logLevel = opts.logLevel;
+    }
+
+    if (opts.transport) {
+      transport = opts.transport;
+    }
+
+    if (opts.amplitudeApiKey) {
+      amplitudeApiKey = opts.amplitudeApiKey;
+    }
+
+    if (opts.flushInterval) {
+      flushInterval = opts.flushInterval;
+    }
+
+    if (opts.enableSendBeacon) {
+      enableSendBeacon = opts.enableSendBeacon;
+    }
+
+    return logger; // eslint-disable-line no-use-before-define
+  }
+
   if (isBrowser()) {
     safeInterval(flush, flushInterval);
   }
 
-  window.addEventListener('beforeunload', function () {
-    immediateFlush();
-  });
-  window.addEventListener('unload', function () {
-    immediateFlush();
-  });
+  if (typeof window === 'object') {
+    window.addEventListener('beforeunload', function () {
+      immediateFlush();
+    });
+    window.addEventListener('unload', function () {
+      immediateFlush();
+    });
+  }
+
   var logger = {
     debug: debug,
     info: info,
@@ -246,7 +313,8 @@ export function Logger(_ref2) {
     addMetaBuilder: addMetaBuilder,
     addTrackingBuilder: addTrackingBuilder,
     addHeaderBuilder: addHeaderBuilder,
-    setTransport: setTransport
+    setTransport: setTransport,
+    configure: configure
   };
   return logger;
 }

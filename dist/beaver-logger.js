@@ -679,6 +679,18 @@
             fn.__name__ = fn.displayName = name;
             return fn;
         }
+        function uniqueID() {
+            var chars = "0123456789abcdef";
+            return "xxxxxxxxxx".replace(/./g, (function() {
+                return chars.charAt(Math.floor(Math.random() * chars.length));
+            })) + "_" + function(str) {
+                if ("function" == typeof btoa) return btoa(encodeURIComponent(str).replace(/%([0-9A-F]{2})/g, (function(m, p1) {
+                    return String.fromCharCode(parseInt(p1, 16));
+                })));
+                if ("undefined" != typeof Buffer) return Buffer.from(str, "utf8").toString("base64");
+                throw new Error("Can not find window.btoa or Buffer");
+            }((new Date).toISOString().slice(11, 19).replace("T", ".")).replace(/[^a-zA-Z0-9]/g, "").toLowerCase();
+        }
         var objectIDs;
         function serializeArgs(args) {
             try {
@@ -688,18 +700,9 @@
                         if (null == obj || "object" != typeof obj && "function" != typeof obj) throw new Error("Invalid object");
                         var uid = objectIDs.get(obj);
                         if (!uid) {
-                            uid = typeof obj + ":" + (chars = "0123456789abcdef", "xxxxxxxxxx".replace(/./g, (function() {
-                                return chars.charAt(Math.floor(Math.random() * chars.length));
-                            })) + "_" + function(str) {
-                                if ("function" == typeof btoa) return btoa(encodeURIComponent(str).replace(/%([0-9A-F]{2})/g, (function(m, p1) {
-                                    return String.fromCharCode(parseInt(p1, 16));
-                                })));
-                                if ("undefined" != typeof Buffer) return Buffer.from(str, "utf8").toString("base64");
-                                throw new Error("Can not find window.btoa or Buffer");
-                            }((new Date).toISOString().slice(11, 19).replace("T", ".")).replace(/[^a-zA-Z0-9]/g, "").toLowerCase());
+                            uid = typeof obj + ":" + uniqueID();
                             objectIDs.set(obj, uid);
                         }
-                        var chars;
                         return uid;
                     }(val) + "]" : val;
                 }));
@@ -707,53 +710,124 @@
                 throw new Error("Arguments not serializable -- can not be used to memoize");
             }
         }
-        var memoizedFunctions = [];
+        function getEmptyObject() {
+            return {};
+        }
+        var memoizeGlobalIndex = 0;
+        var memoizeGlobalIndexValidFrom = 0;
         function memoize(method, options) {
-            var _this = this;
             void 0 === options && (options = {});
-            var cacheMap = new weakmap_CrossDomainSafeWeakMap;
+            var _options$thisNamespac = options.thisNamespace, thisNamespace = void 0 !== _options$thisNamespac && _options$thisNamespac, cacheTime = options.time;
+            var simpleCache;
+            var thisCache;
+            var memoizeIndex = memoizeGlobalIndex;
+            memoizeGlobalIndex += 1;
             var memoizedFunction = function() {
                 for (var _len = arguments.length, args = new Array(_len), _key = 0; _key < _len; _key++) args[_key] = arguments[_key];
-                var cache = cacheMap.getOrSet(options.thisNamespace ? this : method, (function() {
-                    return {};
-                }));
-                var key = serializeArgs(args);
-                var cacheTime = options.time;
-                cache[key] && cacheTime && Date.now() - cache[key].time < cacheTime && delete cache[key];
-                if (cache[key]) return cache[key].value;
+                if (memoizeIndex < memoizeGlobalIndexValidFrom) {
+                    simpleCache = null;
+                    thisCache = null;
+                    memoizeIndex = memoizeGlobalIndex;
+                    memoizeGlobalIndex += 1;
+                }
+                var cache;
+                cache = thisNamespace ? (thisCache = thisCache || new weakmap_CrossDomainSafeWeakMap).getOrSet(this, getEmptyObject) : simpleCache = simpleCache || {};
+                var cacheKey = serializeArgs(args);
+                var cacheResult = cache[cacheKey];
+                if (cacheResult && cacheTime && Date.now() - cacheResult.time < cacheTime) {
+                    delete cache[cacheKey];
+                    cacheResult = null;
+                }
+                if (cacheResult) return cacheResult.value;
                 var time = Date.now();
                 var value = method.apply(this, arguments);
-                cache[key] = {
+                cache[cacheKey] = {
                     time: time,
                     value: value
                 };
-                return cache[key].value;
+                return value;
             };
             memoizedFunction.reset = function() {
-                cacheMap.delete(options.thisNamespace ? _this : method);
+                simpleCache = null;
+                thisCache = null;
             };
-            memoizedFunctions.push(memoizedFunction);
             return setFunctionName(memoizedFunction, (options.name || getFunctionName(method)) + "::memoized");
         }
         memoize.clear = function() {
-            for (var _i2 = 0; _i2 < memoizedFunctions.length; _i2++) memoizedFunctions[_i2].reset();
+            memoizeGlobalIndexValidFrom = memoizeGlobalIndex;
         };
         function src_util_noop() {}
+        memoize((function(obj) {
+            if (Object.values) return Object.values(obj);
+            var result = [];
+            for (var key in obj) obj.hasOwnProperty(key) && result.push(obj[key]);
+            return result;
+        }));
         function objFilter(obj, filter) {
             void 0 === filter && (filter = Boolean);
             var result = {};
             for (var key in obj) obj.hasOwnProperty(key) && filter(obj[key], key) && (result[key] = obj[key]);
             return result;
         }
-        memoize((function(obj) {
-            var result = [];
-            for (var key in obj) obj.hasOwnProperty(key) && result.push(obj[key]);
-            return result;
+        Error;
+        function isDocumentReady() {
+            return Boolean(document.body) && "complete" === document.readyState;
+        }
+        function isDocumentInteractive() {
+            return Boolean(document.body) && "interactive" === document.readyState;
+        }
+        memoize((function() {
+            return new promise_ZalgoPromise((function(resolve) {
+                if (isDocumentReady() || isDocumentInteractive()) return resolve();
+                var interval = setInterval((function() {
+                    if (isDocumentReady() || isDocumentInteractive()) {
+                        clearInterval(interval);
+                        return resolve();
+                    }
+                }), 10);
+            }));
         }));
         function dom_isBrowser() {
-            return "undefined" != typeof window;
+            return "undefined" != typeof window && void 0 !== window.location;
         }
-        Object.create(Error.prototype);
+        var currentScript = "undefined" != typeof document ? document.currentScript : null;
+        var getCurrentScript = memoize((function() {
+            if (currentScript) return currentScript;
+            if (currentScript = function() {
+                try {
+                    var stack = function() {
+                        try {
+                            throw new Error("_");
+                        } catch (err) {
+                            return err.stack || "";
+                        }
+                    }();
+                    var stackDetails = /.*at [^(]*\((.*):(.+):(.+)\)$/gi.exec(stack);
+                    var scriptLocation = stackDetails && stackDetails[1];
+                    if (!scriptLocation) return;
+                    for (var _i22 = 0, _Array$prototype$slic2 = [].slice.call(document.getElementsByTagName("script")).reverse(); _i22 < _Array$prototype$slic2.length; _i22++) {
+                        var script = _Array$prototype$slic2[_i22];
+                        if (script.src && script.src === scriptLocation) return script;
+                    }
+                } catch (err) {}
+            }()) return currentScript;
+            throw new Error("Can not determine current script");
+        }));
+        var currentUID = uniqueID();
+        memoize((function() {
+            var script;
+            try {
+                script = getCurrentScript();
+            } catch (err) {
+                return currentUID;
+            }
+            var uid = script.getAttribute("data-uid");
+            if (uid && "string" == typeof uid) return uid;
+            if ((uid = script.getAttribute("data-uid-auto")) && "string" == typeof uid) return uid;
+            uid = uniqueID();
+            script.setAttribute("data-uid-auto", uid);
+            return uid;
+        }));
         var http_headerBuilders = [];
         var LOG_LEVEL = {
             DEBUG: "debug",
@@ -769,79 +843,85 @@
         var DEFAULT_LOG_LEVEL = LOG_LEVEL.WARN;
         function httpTransport(_ref) {
             var url = _ref.url, method = _ref.method, headers = _ref.headers, json = _ref.json, _ref$enableSendBeacon = _ref.enableSendBeacon, enableSendBeacon = void 0 !== _ref$enableSendBeacon && _ref$enableSendBeacon;
-            var hasHeaders = headers && Object.keys(headers).length;
-            return window.navigator.sendBeacon && !hasHeaders && enableSendBeacon ? new promise_ZalgoPromise((function(resolve) {
-                resolve(window.navigator.sendBeacon(url, JSON.stringify(json)));
-            })) : function(_ref) {
-                var url = _ref.url, _ref$method = _ref.method, method = void 0 === _ref$method ? "get" : _ref$method, _ref$headers = _ref.headers, headers = void 0 === _ref$headers ? {} : _ref$headers, json = _ref.json, data = _ref.data, body = _ref.body, _ref$win = _ref.win, win = void 0 === _ref$win ? window : _ref$win, _ref$timeout = _ref.timeout, timeout = void 0 === _ref$timeout ? 0 : _ref$timeout;
-                return new promise_ZalgoPromise((function(resolve, reject) {
-                    if (json && data || json && body || data && json) throw new Error("Only options.json or options.data or options.body should be passed");
-                    var normalizedHeaders = {};
-                    for (var _i4 = 0, _Object$keys2 = Object.keys(headers); _i4 < _Object$keys2.length; _i4++) {
-                        var _key2 = _Object$keys2[_i4];
-                        normalizedHeaders[_key2.toLowerCase()] = headers[_key2];
-                    }
-                    json ? normalizedHeaders["content-type"] = normalizedHeaders["content-type"] || "application/json" : (data || body) && (normalizedHeaders["content-type"] = normalizedHeaders["content-type"] || "application/x-www-form-urlencoded; charset=utf-8");
-                    normalizedHeaders.accept = normalizedHeaders.accept || "application/json";
-                    for (var _i6 = 0; _i6 < http_headerBuilders.length; _i6++) {
-                        var builtHeaders = (0, http_headerBuilders[_i6])();
-                        for (var _i8 = 0, _Object$keys4 = Object.keys(builtHeaders); _i8 < _Object$keys4.length; _i8++) {
-                            var _key3 = _Object$keys4[_i8];
-                            normalizedHeaders[_key3.toLowerCase()] = builtHeaders[_key3];
+            return promise_ZalgoPromise.try((function() {
+                var hasHeaders = headers && Object.keys(headers).length;
+                if (window && window.navigator.sendBeacon && !hasHeaders && enableSendBeacon && window.Blob) try {
+                    var blob = new Blob([ JSON.stringify(json) ], {
+                        type: "application/json"
+                    });
+                    return window.navigator.sendBeacon(url, blob);
+                } catch (e) {}
+                return function(_ref) {
+                    var url = _ref.url, _ref$method = _ref.method, method = void 0 === _ref$method ? "get" : _ref$method, _ref$headers = _ref.headers, headers = void 0 === _ref$headers ? {} : _ref$headers, json = _ref.json, data = _ref.data, body = _ref.body, _ref$win = _ref.win, win = void 0 === _ref$win ? window : _ref$win, _ref$timeout = _ref.timeout, timeout = void 0 === _ref$timeout ? 0 : _ref$timeout;
+                    return new promise_ZalgoPromise((function(resolve, reject) {
+                        if (json && data || json && body || data && json) throw new Error("Only options.json or options.data or options.body should be passed");
+                        var normalizedHeaders = {};
+                        for (var _i4 = 0, _Object$keys2 = Object.keys(headers); _i4 < _Object$keys2.length; _i4++) {
+                            var _key2 = _Object$keys2[_i4];
+                            normalizedHeaders[_key2.toLowerCase()] = headers[_key2];
                         }
-                    }
-                    var xhr = new win.XMLHttpRequest;
-                    xhr.addEventListener("load", (function() {
-                        var responseHeaders = function(rawHeaders) {
-                            void 0 === rawHeaders && (rawHeaders = "");
-                            var result = {};
-                            for (var _i2 = 0, _rawHeaders$trim$spli2 = rawHeaders.trim().split("\n"); _i2 < _rawHeaders$trim$spli2.length; _i2++) {
-                                var _line$split = _rawHeaders$trim$spli2[_i2].split(":"), _key = _line$split[0], values = _line$split.slice(1);
-                                result[_key.toLowerCase()] = values.join(":").trim();
+                        json ? normalizedHeaders["content-type"] = normalizedHeaders["content-type"] || "application/json" : (data || body) && (normalizedHeaders["content-type"] = normalizedHeaders["content-type"] || "application/x-www-form-urlencoded; charset=utf-8");
+                        normalizedHeaders.accept = normalizedHeaders.accept || "application/json";
+                        for (var _i6 = 0; _i6 < http_headerBuilders.length; _i6++) {
+                            var builtHeaders = (0, http_headerBuilders[_i6])();
+                            for (var _i8 = 0, _Object$keys4 = Object.keys(builtHeaders); _i8 < _Object$keys4.length; _i8++) {
+                                var _key3 = _Object$keys4[_i8];
+                                normalizedHeaders[_key3.toLowerCase()] = builtHeaders[_key3];
                             }
-                            return result;
-                        }(this.getAllResponseHeaders());
-                        if (!this.status) return reject(new Error("Request to " + method.toLowerCase() + " " + url + " failed: no response status code."));
-                        var contentType = responseHeaders["content-type"];
-                        var isJSON = contentType && (0 === contentType.indexOf("application/json") || 0 === contentType.indexOf("text/json"));
-                        var responseBody = this.responseText;
-                        try {
-                            responseBody = JSON.parse(responseBody);
-                        } catch (err) {
-                            if (isJSON) return reject(new Error("Invalid json: " + this.responseText + "."));
                         }
-                        return resolve({
-                            status: this.status,
-                            headers: responseHeaders,
-                            body: responseBody
-                        });
-                    }), !1);
-                    xhr.addEventListener("error", (function(evt) {
-                        reject(new Error("Request to " + method.toLowerCase() + " " + url + " failed: " + evt.toString() + "."));
-                    }), !1);
-                    xhr.open(method, url, !0);
-                    for (var _key4 in normalizedHeaders) normalizedHeaders.hasOwnProperty(_key4) && xhr.setRequestHeader(_key4, normalizedHeaders[_key4]);
-                    json ? body = JSON.stringify(json) : data && (body = Object.keys(data).map((function(key) {
-                        return encodeURIComponent(key) + "=" + (data ? encodeURIComponent(data[key]) : "");
-                    })).join("&"));
-                    xhr.timeout = timeout;
-                    xhr.ontimeout = function() {
-                        reject(new Error("Request to " + method.toLowerCase() + " " + url + " has timed out"));
-                    };
-                    xhr.send(body);
-                }));
-            }({
-                url: url,
-                method: method,
-                headers: headers,
-                json: json
-            }).then(src_util_noop);
+                        var xhr = new win.XMLHttpRequest;
+                        xhr.addEventListener("load", (function() {
+                            var responseHeaders = function(rawHeaders) {
+                                void 0 === rawHeaders && (rawHeaders = "");
+                                var result = {};
+                                for (var _i2 = 0, _rawHeaders$trim$spli2 = rawHeaders.trim().split("\n"); _i2 < _rawHeaders$trim$spli2.length; _i2++) {
+                                    var _line$split = _rawHeaders$trim$spli2[_i2].split(":"), _key = _line$split[0], values = _line$split.slice(1);
+                                    result[_key.toLowerCase()] = values.join(":").trim();
+                                }
+                                return result;
+                            }(this.getAllResponseHeaders());
+                            if (!this.status) return reject(new Error("Request to " + method.toLowerCase() + " " + url + " failed: no response status code."));
+                            var contentType = responseHeaders["content-type"];
+                            var isJSON = contentType && (0 === contentType.indexOf("application/json") || 0 === contentType.indexOf("text/json"));
+                            var responseBody = this.responseText;
+                            try {
+                                responseBody = JSON.parse(responseBody);
+                            } catch (err) {
+                                if (isJSON) return reject(new Error("Invalid json: " + this.responseText + "."));
+                            }
+                            return resolve({
+                                status: this.status,
+                                headers: responseHeaders,
+                                body: responseBody
+                            });
+                        }), !1);
+                        xhr.addEventListener("error", (function(evt) {
+                            reject(new Error("Request to " + method.toLowerCase() + " " + url + " failed: " + evt.toString() + "."));
+                        }), !1);
+                        xhr.open(method, url, !0);
+                        for (var _key4 in normalizedHeaders) normalizedHeaders.hasOwnProperty(_key4) && xhr.setRequestHeader(_key4, normalizedHeaders[_key4]);
+                        json ? body = JSON.stringify(json) : data && (body = Object.keys(data).map((function(key) {
+                            return encodeURIComponent(key) + "=" + (data ? encodeURIComponent(data[key]) : "");
+                        })).join("&"));
+                        xhr.timeout = timeout;
+                        xhr.ontimeout = function() {
+                            reject(new Error("Request to " + method.toLowerCase() + " " + url + " has timed out"));
+                        };
+                        xhr.send(body);
+                    }));
+                }({
+                    url: url,
+                    method: method,
+                    headers: headers,
+                    json: json
+                });
+            })).then(src_util_noop);
         }
         function extendIfDefined(target, source) {
             for (var key in source) source.hasOwnProperty(key) && source[key] && !target[key] && (target[key] = source[key]);
         }
         function Logger(_ref2) {
-            var url = _ref2.url, prefix = _ref2.prefix, _ref2$logLevel = _ref2.logLevel, logLevel = void 0 === _ref2$logLevel ? DEFAULT_LOG_LEVEL : _ref2$logLevel, _ref2$transport = _ref2.transport, transport = void 0 === _ref2$transport ? httpTransport : _ref2$transport, _ref2$flushInterval = _ref2.flushInterval, flushInterval = void 0 === _ref2$flushInterval ? 6e4 : _ref2$flushInterval, _ref2$enableSendBeaco = _ref2.enableSendBeacon, enableSendBeacon = void 0 !== _ref2$enableSendBeaco && _ref2$enableSendBeaco;
+            var url = _ref2.url, prefix = _ref2.prefix, _ref2$logLevel = _ref2.logLevel, logLevel = void 0 === _ref2$logLevel ? DEFAULT_LOG_LEVEL : _ref2$logLevel, _ref2$transport = _ref2.transport, transport = void 0 === _ref2$transport ? httpTransport : _ref2$transport, amplitudeApiKey = _ref2.amplitudeApiKey, _ref2$flushInterval = _ref2.flushInterval, flushInterval = void 0 === _ref2$flushInterval ? 6e4 : _ref2$flushInterval, _ref2$enableSendBeaco = _ref2.enableSendBeacon, enableSendBeacon = void 0 !== _ref2$enableSendBeaco && _ref2$enableSendBeaco;
             var events = [];
             var tracking = [];
             var payloadBuilders = [];
@@ -866,7 +946,8 @@
                         var headers = {};
                         for (var _i4 = 0; _i4 < headerBuilders.length; _i4++) extendIfDefined(headers, (0, 
                         headerBuilders[_i4])(headers));
-                        var res = transport({
+                        var res;
+                        url && (res = transport({
                             method: "POST",
                             url: url,
                             headers: headers,
@@ -876,10 +957,26 @@
                                 tracking: tracking
                             },
                             enableSendBeacon: enableSendBeacon
-                        });
+                        }).catch(src_util_noop));
+                        amplitudeApiKey && transport({
+                            method: "POST",
+                            url: "https://api2.amplitude.com/2/httpapi",
+                            headers: {
+                                "content-type": "application/json"
+                            },
+                            json: {
+                                api_key: amplitudeApiKey,
+                                events: tracking.map((function(payload) {
+                                    return _extends({
+                                        event_type: payload.transition_name || "event",
+                                        event_properties: payload
+                                    }, payload);
+                                }))
+                            }
+                        }).catch(src_util_noop);
                         events = [];
                         tracking = [];
-                        return res.then(src_util_noop);
+                        return promise_ZalgoPromise.resolve(res).then(src_util_noop);
                     }
                 }));
             }
@@ -933,12 +1030,14 @@
                 }), time);
             }());
             var method, time;
-            window.addEventListener("beforeunload", (function() {
-                immediateFlush();
-            }));
-            window.addEventListener("unload", (function() {
-                immediateFlush();
-            }));
+            if ("object" == typeof window) {
+                window.addEventListener("beforeunload", (function() {
+                    immediateFlush();
+                }));
+                window.addEventListener("unload", (function() {
+                    immediateFlush();
+                }));
+            }
             var logger = {
                 debug: function(event, payload) {
                     return log(LOG_LEVEL.DEBUG, event, payload);
@@ -978,6 +1077,16 @@
                 },
                 setTransport: function(newTransport) {
                     transport = newTransport;
+                    return logger;
+                },
+                configure: function(opts) {
+                    opts.url && (url = opts.url);
+                    opts.prefix && (prefix = opts.prefix);
+                    opts.logLevel && (logLevel = opts.logLevel);
+                    opts.transport && (transport = opts.transport);
+                    opts.amplitudeApiKey && (amplitudeApiKey = opts.amplitudeApiKey);
+                    opts.flushInterval && (flushInterval = opts.flushInterval);
+                    opts.enableSendBeacon && (enableSendBeacon = opts.enableSendBeacon);
                     return logger;
                 }
             };

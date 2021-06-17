@@ -3,7 +3,7 @@
 import { ZalgoPromise } from 'zalgo-promise/src';
 import { request, isBrowser, promiseDebounce, noop, safeInterval, objFilter } from 'belter/src';
 
-import { DEFAULT_LOG_LEVEL, LOG_LEVEL_PRIORITY, AUTO_FLUSH_LEVEL, FLUSH_INTERVAL } from './config';
+import { DEFAULT_LOG_LEVEL, LOG_LEVEL_PRIORITY, AUTO_FLUSH_LEVEL, FLUSH_INTERVAL, AMPLITUDE_URL } from './config';
 import { LOG_LEVEL, PROTOCOL } from './constants';
 
 type TransportOptions = {|
@@ -11,19 +11,20 @@ type TransportOptions = {|
     method : string,
     headers : { [string] : string },
     json : Object,
-    enableSendBeacon : boolean
+    enableSendBeacon? : boolean
 |};
 
 type Payload = { [string] : string | boolean };
 type Transport = (TransportOptions) => ZalgoPromise<void>;
 
 type LoggerOptions = {|
-    url : string,
+    url? : string,
     prefix? : string,
     logLevel? : $Values<typeof LOG_LEVEL>,
     transport? : Transport,
     flushInterval? : number,
-    enableSendBeacon? : boolean
+    enableSendBeacon? : boolean,
+    amplitudeApiKey? : string
 |};
 
 type ClientPayload = { [string] : ?string | ?boolean };
@@ -49,19 +50,24 @@ export type LoggerType = {|
     addTrackingBuilder : AddBuilder,
     addHeaderBuilder : AddBuilder,
 
-    setTransport : (Transport) => LoggerType
+    setTransport : (Transport) => LoggerType,
+    configure : (LoggerOptions) => LoggerType
 |};
 
 function httpTransport({ url, method, headers, json, enableSendBeacon = false } : TransportOptions) : ZalgoPromise<void> {
-    const hasHeaders = headers && Object.keys(headers).length;
-    if (window && window.navigator.sendBeacon && !hasHeaders && enableSendBeacon && window.Blob) {
-        return new ZalgoPromise(resolve => {
-            const blob = new Blob([ JSON.stringify(json) ], { type: 'application/json' });
-            resolve(window.navigator.sendBeacon(url, blob));
-        });
-    } else {
-        return request({ url, method, headers, json }).then(noop);
-    }
+    return ZalgoPromise.try(() => {
+        const hasHeaders = headers && Object.keys(headers).length;
+        if (window && window.navigator.sendBeacon && !hasHeaders && enableSendBeacon && window.Blob) {
+            try {
+                const blob = new Blob([ JSON.stringify(json) ], { type: 'application/json' });
+                return window.navigator.sendBeacon(url, blob);
+            } catch (e) {
+                // pass
+            }
+        }
+
+        return request({ url, method, headers, json });
+    }).then(noop);
 }
 
 function extendIfDefined(target : { [string] : string | boolean }, source : { [string] : ?string | ?boolean }) {
@@ -72,7 +78,7 @@ function extendIfDefined(target : { [string] : string | boolean }, source : { [s
     }
 }
 
-export function Logger({ url, prefix, logLevel = DEFAULT_LOG_LEVEL, transport = httpTransport, flushInterval = FLUSH_INTERVAL, enableSendBeacon = false } : LoggerOptions) : LoggerType {
+export function Logger({ url, prefix, logLevel = DEFAULT_LOG_LEVEL, transport = httpTransport, amplitudeApiKey, flushInterval = FLUSH_INTERVAL, enableSendBeacon = false } : LoggerOptions) : LoggerType {
 
     let events : Array<{| level : $Values<typeof LOG_LEVEL>, event : string, payload : Payload |}> = [];
     let tracking : Array<Payload> = [];
@@ -131,22 +137,47 @@ export function Logger({ url, prefix, logLevel = DEFAULT_LOG_LEVEL, transport = 
                 extendIfDefined(headers, builder(headers));
             }
 
-            const res = transport({
-                method: 'POST',
-                url,
-                headers,
-                json:   {
-                    events,
-                    meta,
-                    tracking
-                },
-                enableSendBeacon
-            });
+            let res;
+
+            if (url) {
+                res = transport({
+                    method: 'POST',
+                    url,
+                    headers,
+                    json:   {
+                        events,
+                        meta,
+                        tracking
+                    },
+                    enableSendBeacon
+                }).catch(noop);
+            }
+
+            if (amplitudeApiKey) {
+                transport({
+                    method:  'POST',
+                    url:     AMPLITUDE_URL,
+                    headers: {
+                        'content-type': 'application/json'
+                    },
+                    json: {
+                        api_key: amplitudeApiKey,
+                        events:  tracking.map((payload : Payload) => {
+                            // $FlowFixMe
+                            return {
+                                event_type:       payload.transition_name || 'event',
+                                event_properties: payload,
+                                ...payload
+                            };
+                        })
+                    }
+                }).catch(noop);
+            }
 
             events = [];
             tracking = [];
 
-            return res.then(noop);
+            return ZalgoPromise.resolve(res).then(noop);
         });
     }
 
@@ -249,6 +280,38 @@ export function Logger({ url, prefix, logLevel = DEFAULT_LOG_LEVEL, transport = 
         return logger; // eslint-disable-line no-use-before-define
     }
 
+    function configure(opts : LoggerOptions) : LoggerType {
+        if (opts.url) {
+            url = opts.url;
+        }
+
+        if (opts.prefix) {
+            prefix = opts.prefix;
+        }
+
+        if (opts.logLevel) {
+            logLevel = opts.logLevel;
+        }
+
+        if (opts.transport) {
+            transport = opts.transport;
+        }
+
+        if (opts.amplitudeApiKey) {
+            amplitudeApiKey = opts.amplitudeApiKey;
+        }
+
+        if (opts.flushInterval) {
+            flushInterval = opts.flushInterval;
+        }
+
+        if (opts.enableSendBeacon) {
+            enableSendBeacon = opts.enableSendBeacon;
+        }
+
+        return logger; // eslint-disable-line no-use-before-define
+    }
+
     if (isBrowser()) {
         safeInterval(flush, flushInterval);
     }
@@ -275,7 +338,8 @@ export function Logger({ url, prefix, logLevel = DEFAULT_LOG_LEVEL, transport = 
         addMetaBuilder,
         addTrackingBuilder,
         addHeaderBuilder,
-        setTransport
+        setTransport,
+        configure
     };
 
     return logger;
